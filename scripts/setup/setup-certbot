@@ -93,10 +93,14 @@ else
     needs_hooks=1
 fi
 
+# SAC Uto patch: run certbot non-interactively and agree to the ToS
+# (--non-interactive and --agree-tos below)
 certbot certonly "${method_args[@]}" \
     "${HOSTNAMES[@]}" -m "$EMAIL" \
     "${agree_tos[@]}" \
     "${default_keep[@]}" \
+    --non-interactive \
+    --agree-tos \
     --no-eff-email
 
 # "certbot certonly" before version 3.2.0 does not run deploy hooks,
