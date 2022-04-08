@@ -768,7 +768,7 @@ SOCIAL_AUTH_SAML_SUPPORT_CONTACT = {
 #################
 ## GIF picker / search engine integrations. To get an API key, see:
 ## https://zulip.readthedocs.io/en/latest/production/gif-picker-integrations.html
-# GIPHY_API_KEY = "<Your API key from GIPHY>"
+GIPHY_API_KEY = "__zulip_giphy_api_key__"
 # TENOR_API_KEY = "<Your API key from Tenor>"
 # KLIPY_API_KEY = "<Your API key from KLIPY>"
 
