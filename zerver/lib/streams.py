@@ -521,7 +521,8 @@ def create_streams_if_needed(
             stream_dict["name"],
             invite_only=invite_only,
             is_web_public=stream_dict.get("is_web_public", False),
-            history_public_to_subscribers=stream_dict.get("history_public_to_subscribers"),
+            # SAC Uto patch: only allow private streams with shared history
+            history_public_to_subscribers=True,
             stream_description=stream_dict.get("description", ""),
             message_retention_days=stream_dict.get("message_retention_days", None),
             default_push_notifications=stream_dict.get("default_push_notifications", False),
