@@ -138,21 +138,39 @@ You can always come back to the [Welcome to Zulip video]({navigation_tour_video_
                 user.realm, welcome_message_custom_text
             )
 
-        content = _("""
-Hello, and welcome to Zulip!👋 {inform_about_tracked_onboarding_messages_text}
-
-{getting_started_text} {organization_setup_text}
-
-{navigation_tour_video_text}
-
-{demo_organization_text}
-
-""").format(
-            inform_about_tracked_onboarding_messages_text=inform_about_tracked_onboarding_messages_text,
-            getting_started_text=getting_started_string,
-            organization_setup_text=organization_setup_string,
-            navigation_tour_video_text=navigation_tour_video_string,
-            demo_organization_text=demo_organization_warning_string,
+        content = "".join(
+            [
+                "**Hoi und willkommen beim Chat-Service der SAC-Sektion Uto! 👋**\n",
+                "\n",
+                "Hier sind ein paar Dinge, die du als nächstes tun könntest:\n",
+                "\n",
+                "* Lies unsere Anleitung um die Chat-Plattform besser kennenzulernen: https://sac-uto.ch/de/services/chat\n",
+                "* Installiere die Zulip-App auf dein Handy: https://zulip.com/apps – und melde dich dort am Server `chat.sac-uto.ch` an\n",
+                "* Schau dir die öffentlichen Streams an und mach mit bei der Diskussion\n",
+                "\n",
+                "---\n",
+                "\n",
+                "**Informiere dich auf Zulip über freie Plätze!**\n",
+                "\n",
+                "Unser Bot @**Freie Plätze** postet bei freien Plätzen auf Touren und Kursen in den folgenden Kanälen:\n",
+                "\n",
+                "* #**freie-plätze-alpinist-innen** – für Alpinist/innen\n",
+                "* #**freie-plätze-senior-innen** – für Senior/innen\n",
+                "* #**freie-plätze-jung-alpinist-innen** – für Jungalpinist/innen\n",
+                "* #**freie-plätze-jugend** – für Jugend\n",
+                "\n",
+                "Du wurdest automatisch zu diesen vier Kanälen hinzugefügt, bist aber natürlich frei, sie stummzuschalten oder zu deabonnieren. Übrigens kannst du auch einzelne Themen in den Kanälen stummschalten, falls du keine Infos zu einzelnen Disziplinen möchtest.\n",
+                "\n",
+                "---\n",
+                "\n",
+                "*Hast du deine E-Mail auf dem SAC-Portal geändert, und wurde dir deswegen ein neues Zulip-Konto erstellt?*\n",
+                "*Keine Sorge! Schreib uns in #**chat-hilfe** um dein altes Konto wiederherzustellen.*\n",
+                "\n",
+                "---\n",
+                "\n",
+                "Viel Spass beim Chatten wünscht dir\n",
+                "das Moderatoren- und Admin-Team 🥳",
+            ]
         )
 
     welcome_bot_messages.append(
