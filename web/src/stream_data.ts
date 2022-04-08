@@ -488,7 +488,7 @@ export function can_toggle_subscription(sub: StreamSubscription): boolean {
     // archive stream process.
     return (
         (sub.subscribed || (!current_user.is_guest && !sub.invite_only)) &&
-        !page_params.is_spectator
+        !page_params.is_spectator || current_user.is_admin
     );
 }
 
@@ -507,11 +507,11 @@ export function can_access_topic_history(sub: StreamSubscription): boolean {
 }
 
 export function can_preview(sub: StreamSubscription): boolean {
-    return sub.subscribed || !sub.invite_only || sub.previously_subscribed;
+    return sub.subscribed || !sub.invite_only || sub.previously_subscribed || current_user.is_admin;
 }
 
 export function can_change_permissions(sub: StreamSubscription): boolean {
-    return current_user.is_admin && (!sub.invite_only || sub.subscribed);
+    return current_user.is_admin;
 }
 
 export function can_view_subscribers(sub: StreamSubscription): boolean {
@@ -525,7 +525,8 @@ export function can_subscribe_others(sub: StreamSubscription): boolean {
     return (
         !current_user.is_guest &&
         (!sub.invite_only || sub.subscribed) &&
-        settings_data.user_can_subscribe_other_users()
+        settings_data.user_can_subscribe_other_users() ||
+        current_user.is_admin
     );
 }
 
