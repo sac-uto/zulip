@@ -77,6 +77,7 @@ def upload_image_to_s3(
     ] = "STANDARD",
     cache_control: str | None = None,
     extra_metadata: dict[str, str] | None = None,
+    acl: str | None = "private",
 ) -> None:
     key = bucket.Object(file_name)
     metadata: dict[str, str] = {}
@@ -95,6 +96,7 @@ def upload_image_to_s3(
         extras["CacheControl"] = cache_control
 
     key.put(
+        ACL=acl,
         Body=contents,
         Metadata=metadata,
         ContentType=content_type,
@@ -287,6 +289,7 @@ class S3UploadBackend(ZulipUploadBackend):
             image_data,
             extra_metadata=extra_metadata,
             cache_control="public, max-age=31536000, immutable",
+            acl="public-read",
         )
 
     @override
@@ -313,6 +316,7 @@ class S3UploadBackend(ZulipUploadBackend):
             content_type,
             user_profile,
             image_data,
+            acl="public-read",
         )
 
         resized_data = resize_realm_icon(image_data)
@@ -322,6 +326,7 @@ class S3UploadBackend(ZulipUploadBackend):
             "image/png",
             user_profile,
             resized_data,
+            acl="public-read",
         )
         # See avatar_url in avatar.py for URL.  (That code also handles the case
         # that users use gravatar.)
@@ -352,6 +357,7 @@ class S3UploadBackend(ZulipUploadBackend):
             content_type,
             user_profile,
             image_data,
+            acl="public-read",
         )
 
         resized_data = resize_logo(image_data)
@@ -361,6 +367,7 @@ class S3UploadBackend(ZulipUploadBackend):
             "image/png",
             user_profile,
             resized_data,
+            acl="public-read",
         )
         # See avatar_url in avatar.py for URL.  (That code also handles the case
         # that users use gravatar.)
@@ -390,6 +397,7 @@ class S3UploadBackend(ZulipUploadBackend):
             user_profile,
             image_data,
             cache_control="public, max-age=31536000, immutable",
+            acl="public-read",
         )
 
     @override
