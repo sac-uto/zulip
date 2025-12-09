@@ -184,7 +184,9 @@ class Stream(models.Model):
         "can_add_subscribers_group": GroupPermissionSetting(
             allow_nobody_group=True,
             allow_everyone_group=False,
-            default_group_name=SystemGroups.NOBODY,
+            # SAC Uto patch: grant content access to administrators by default
+            # default_group_name=SystemGroups.NOBODY,
+            default_group_name=SystemGroups.ADMINISTRATORS,
         ),
         "can_administer_channel_group": GroupPermissionSetting(
             allow_nobody_group=True,
@@ -234,8 +236,9 @@ class Stream(models.Model):
     }
 
     stream_permission_group_settings_requiring_content_access = [
-        "can_add_subscribers_group",
-        "can_subscribe_group",
+        # SAC Uto patch: allow administrators to grant themselves content access
+        # "can_add_subscribers_group",
+        # "can_subscribe_group",
     ]
     assert set(stream_permission_group_settings_requiring_content_access).issubset(
         stream_permission_group_settings.keys()

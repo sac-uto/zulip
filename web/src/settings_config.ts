@@ -894,8 +894,9 @@ export const stream_group_permission_settings: StreamGroupSettingName[] = [
 ];
 
 export const stream_group_permission_settings_requiring_content_access: StreamGroupSettingName[] = [
-    "can_add_subscribers_group",
-    "can_subscribe_group",
+    // SAC Uto patch: allow administrators to grant themselves content access
+    // "can_add_subscribers_group",
+    // "can_subscribe_group",
 ];
 
 // Order of settings is important, as this list is used to
