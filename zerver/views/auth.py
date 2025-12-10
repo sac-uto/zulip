@@ -844,6 +844,11 @@ def update_login_page_context(request: HttpRequest, context: dict[str, Any]) -> 
         if key in request.GET:
             context[key] = request.GET[key]
 
+    # SAC Uto patch: display "not Uto member" error message if set
+    not_uto_member = request.GET.get("not_uto_member")
+    if not_uto_member == "1":
+        context["deactivated_account_error"] = "Dieser Service kann nur von SAC Uto-Mitgliedern benutzt werden."
+
     deactivated_email = request.GET.get("is_deactivated")
     if deactivated_email is None:
         return

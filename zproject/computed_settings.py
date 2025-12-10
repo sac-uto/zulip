@@ -1208,7 +1208,11 @@ for idp_name, idp_dict in SOCIAL_AUTH_SAML_ENABLED_IDPS.items():
 
 SOCIAL_AUTH_PIPELINE = [
     "social_core.pipeline.social_auth.social_details",
+    # SAC Uto patch: pre-process SAC OIDC response
+    "zproject.backends.sac_login_process_response",
     "zproject.backends.social_auth_associate_user",
+    # SAC Uto patch: synchronize user details from SAC OIDC response
+    "zproject.backends.sac_login_sync_user_details",
     "zproject.backends.social_auth_finish",
 ]
 

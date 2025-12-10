@@ -1096,6 +1096,32 @@ def send_user_subscribed_and_new_channel_notifications(
                     ),
                 )
 
+                # SAC Uto patch: generate and publish invite link for newly created private streams
+                if stream.invite_only:
+                    def sac_uto_publish_invite_link(user_profile, stream, sender):
+                        from zerver.models import PreregistrationUser
+                        from zerver.actions.invites import do_create_multiuse_invite_link
+
+                        invite_link = do_create_multiuse_invite_link(
+                            referred_by=user_profile,
+                            invited_as=PreregistrationUser.INVITE_AS["MEMBER"],
+                            invite_expires_in_minutes=100 * 365 * 24 * 60,
+                            include_realm_default_subscriptions=False,
+                            streams=[stream],
+                        )
+                        message = internal_prep_stream_message(
+                            sender=sender,
+                            stream=stream,
+                            topic_name=channel_events_topic_name(stream),
+                            content=_("Mit diesem Link können weitere Personen zu diesem privaten Stream eingeladen werden:\n\n{invite_link}").format(
+                                invite_link=invite_link
+                            ),
+                        )
+                        do_send_messages([message], mark_as_read=[user_profile.id])
+
+                    from django.db import transaction
+                    transaction.on_commit(lambda: sac_uto_publish_invite_link(user_profile, stream, sender))
+
     if len(notifications) > 0:
         do_send_messages(notifications, mark_as_read=[user_profile.id])
 

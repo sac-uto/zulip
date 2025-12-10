@@ -3549,6 +3549,333 @@ class GenericOpenIdConnectBackend(SocialAuthMixin, OpenIdConnectAuth):
         assert isinstance(result, bool)
         return result
 
+# SAC Uto patch: SAC OIDC backend
+@external_auth_method
+class SacLoginBackend(GenericOpenIdConnectBackend):
+    name = "sac"
+    auth_backend_name = "SAC"
+
+    settings_dict = getattr(settings, "SAC_LOGIN_CONFIG", {})
+
+    display_name = "SAC"
+    display_icon = staticfiles_storage.url("images/authentication_backends/sac-icon.png")
+
+    full_name_validated = True
+
+    OIDC_ENDPOINT = settings_dict.get("oidc_url", "")
+    ALLOWED_GROUP_IDS = settings_dict.get("allowed_group_ids", [])
+    DEFAULT_SCOPE = ["openid", "email", "name", "with_roles", "user_groups"]
+    GET_ALL_EXTRA_DATA = True
+
+    @override
+    def get_key_and_secret(self) -> tuple[str, str]:
+        client_id = self.settings_dict.get("client_id")
+        assert isinstance(client_id, str)
+        secret = self.settings_dict.get("client_secret")
+        assert isinstance(secret, str)
+        return client_id, secret
+
+    def is_group_id_allowed(self, group_id: str) -> bool:
+        return group_id in self.ALLOWED_GROUP_IDS
+
+    def should_auto_signup(self) -> bool:
+        return True
+
+# SAC Uto patch: pre-process SAC OIDC response
+@partial
+def sac_login_process_response(
+    backend: BaseAuth, details: dict[str, Any], response: HttpResponse, *args: Any, **kwargs: Any
+) -> HttpResponse | dict[str, Any]:
+    # Bypass this method for non-SAC backends
+    assert isinstance(backend, SocialAuthMixin)
+    if backend.name != "sac":
+        return {}
+    assert isinstance(backend, SacLoginBackend)
+
+    # Log non-sensitive SAC OIDC response fields
+    response_to_log = { i : response[i] for i in response if i not in ["access_token", "refresh_token", "id_token"] }
+    backend.logger.info("Processing SAC login with OIDC response: %s", response_to_log)
+
+    # Populate full name for the next step
+    first_name = response["first_name"]
+    last_name = response["last_name"]
+    details["fullname"] = f"{first_name or ''} {last_name or ''}".strip()
+
+    if "PRETEND_DIFFERENT_EMAIL" in details["fullname"]: # for testing purposes
+        details["email"] = f"changed.{details['email']}"
+
+# SAC Uto patch: synchronize user details from SAC OIDC response
+@partial
+def sac_login_sync_user_details(
+    backend: BaseAuth, details: dict[str, Any], response: HttpResponse, *args: Any, **kwargs: Any
+) -> HttpResponse | dict[str, Any]:
+    from confirmation.models import Confirmation, ConfirmationKeyError, get_object_from_key
+
+    # Bypass this method for non-SAC backends
+    assert isinstance(backend, SocialAuthMixin)
+    if backend.name != "sac":
+        return {}
+    assert isinstance(backend, SacLoginBackend)
+
+    user_profile = kwargs["user_profile"]
+    return_data = kwargs["return_data"]
+    realm = Realm.objects.get(id=return_data["realm_id"])
+
+    # Get SAC ID of user
+    sac_id = response["sub"]
+    backend.logger.info("SAC ID of user: %s", sac_id)
+
+    # Check if the user is an SAC Uto member
+    roles = response.get("roles", [])
+    sac_uto_roles = [role for role in roles if backend.is_group_id_allowed(str(role["layer_group_id"]))]
+    is_sac_uto_member = len(sac_uto_roles) > 0
+    if return_data["full_name"] and "PRETEND_NON_UTO" in return_data["full_name"]: # for testing purposes
+        is_sac_uto_member = False
+    if return_data["full_name"] and "PRETEND_TL" in return_data["full_name"]: # for testing purposes
+        sac_uto_roles.append({
+            "role_class": "Group::SektionsTourenUndKurse::Tourenleiter",
+        })
+    backend.logger.info("User is SAC Uto member: %s", is_sac_uto_member)
+
+    # If this login request came from a private channel invite link then we fetch the invite details
+    invited_to_channel = None
+    multiuse_object_key = backend.strategy.session_get("multiuse_object_key", "")
+    if multiuse_object_key:
+        backend.logger.info("Using invite link ID: %s", multiuse_object_key)
+        try:
+            multiuse_obj = get_object_from_key(multiuse_object_key, [Confirmation.MULTIUSE_INVITE], mark_object_used=False)
+            assert multiuse_obj is not None
+            private_streams_in_multiuse_obj = multiuse_obj.streams.filter(invite_only=True)
+            if private_streams_in_multiuse_obj.exists():
+                invited_to_channel = private_streams_in_multiuse_obj[0]
+                backend.logger.info("Private channel specified in invite: %s", invited_to_channel)
+            else:
+                backend.logger.warn("No private channel specified in invite: %s", multiuse_object_key)
+        except ConfirmationKeyError as exception:
+            backend.logger.warn("Invite not found with ID: %s", multiuse_object_key)
+
+    # If no user was found by email, try to look it up by SAC ID
+    if user_profile is None and sac_id:
+        user_with_sac_id = sac_login_find_user_by_sac_id(realm, backend, sac_id)
+        if user_with_sac_id:
+            user_profile = common_get_active_user(user_with_sac_id.delivery_email, realm, return_data)
+
+    if user_profile:
+        # User already exists, update details from SAC OIDC response
+        sac_login_update_user(realm, backend, response, sac_id, user_profile, is_sac_uto_member, return_data)
+    elif is_sac_uto_member or invited_to_channel:
+        # User doesn't exist yet but are allowed to log in, so we create a new user
+        user_profile = sac_login_create_user(realm, backend, response, sac_id, is_sac_uto_member, return_data)
+    else:
+        # User doesn't exist and they are not allowed to log in, we fail with an error
+        return sac_login_redirect_non_uto_member_to_login(realm)
+
+    assert user_profile is not None
+
+    # If we have an invite, add the user to the private channel
+    if invited_to_channel:
+        sac_login_add_user_to_channel(realm, backend, sac_id, user_profile, invited_to_channel)
+
+    # Add or remove user from specific channels and groups depending on their roles
+    sac_login_adjust_groups_and_channels_for_user(realm, backend, sac_id, user_profile, sac_uto_roles)
+
+    return {
+        "user_profile": user_profile
+    }
+
+def sac_login_create_user(realm, backend, response, sac_id, is_sac_uto_member, return_data):
+    from zerver.models import UserProfile, UserBaseSettings
+    from zerver.actions.create_user import do_create_user
+
+    backend.logger.info("Creating new user with SAC ID: %s", sac_id)
+
+    # Determine the user role and whether to subscribe to public channels
+    if is_sac_uto_member:
+        backend.logger.info("New user with SAC ID %s will be a full member", sac_id)
+        role = UserProfile.ROLE_MEMBER
+        add_initial_stream_subscriptions = True
+    else:
+        backend.logger.info("New user with SAC ID %s will be a guest", sac_id)
+        role = UserProfile.ROLE_GUEST
+        add_initial_stream_subscriptions = False
+
+    # Create new user
+    user_profile = do_create_user(
+        email=return_data["validated_email"],
+        password=None,
+        realm=realm,
+        full_name=return_data["full_name"],
+        role=role,
+        tos_version=settings.TERMS_OF_SERVICE_VERSION,
+        add_initial_stream_subscriptions=add_initial_stream_subscriptions,
+        acting_user=None,
+        enable_marketing_emails=False,
+        email_address_visibility=UserBaseSettings.EMAIL_ADDRESS_VISIBILITY_ADMINS,
+    )
+
+    # Store SAC ID for new user
+    sac_login_store_sac_id_for_user(realm, backend, sac_id, user_profile)
+
+    return user_profile
+
+def sac_login_update_user(realm, backend, response, sac_id, user_profile, is_sac_uto_member, return_data):
+    from zerver.models import UserProfile, UserBaseSettings
+    from zerver.actions.user_settings import do_change_full_name, do_change_user_setting
+
+    # Update email if it has changed
+    email = return_data["validated_email"]
+    if email and user_profile.delivery_email != email:
+        backend.logger.info("Updating email of user %s: %s => %s", sac_id, user_profile.delivery_email, email)
+        if UserProfile.objects.filter(realm=realm, delivery_email__iexact=email).exclude(id=user_profile.id).exists():
+            backend.logger.warn("Failed to update email for user %s: target email %s already in use", sac_id, email)
+        else:
+            do_change_user_delivery_email(user_profile, email, acting_user=None)
+
+    # Store SAC ID if not yet set
+    user_with_sac_id = sac_login_find_user_by_sac_id(realm, backend, sac_id)
+    if user_with_sac_id is None:
+        sac_login_store_sac_id_for_user(realm, backend, sac_id, user_profile)
+
+    # Update name if it has changed
+    full_name = return_data["full_name"]
+    if full_name and user_profile.full_name != full_name:
+        backend.logger.info("Updating name of user %s: %s => %s", sac_id, user_profile.full_name, full_name)
+        do_change_full_name(user_profile, full_name, acting_user=None)
+
+    # Promote or demote user if their SAC Uto membership has changed
+    if user_profile.role == UserProfile.ROLE_GUEST and is_sac_uto_member:
+        sac_login_promote_guest_to_member(realm, backend, sac_id, user_profile)
+    elif user_profile.role == UserProfile.ROLE_MEMBER and not is_sac_uto_member:
+        sac_login_demote_member_to_guest(realm, backend, sac_id, user_profile)
+
+    # Update email address visibility if needed
+    if user_profile.email_address_visibility != UserBaseSettings.EMAIL_ADDRESS_VISIBILITY_ADMINS:
+        backend.logger.info("Resetting email visibility of user %s to the default", sac_id)
+        do_change_user_setting(
+            user_profile, "email_address_visibility", UserBaseSettings.EMAIL_ADDRESS_VISIBILITY_ADMINS, acting_user=None,
+        )
+
+    # TODO: update avatar if needed
+
+def sac_login_redirect_non_uto_member_to_login(realm: Realm) -> HttpResponseRedirect:
+    redirect_url = realm.url + reverse(
+        "login_page", kwargs={"template_name": "zerver/login.html"}, query={"not_uto_member": "1"}
+    )
+    return HttpResponseRedirect(redirect_url)
+
+def sac_login_find_user_by_sac_id(realm, backend, sac_id) -> UserProfile | None:
+    try:
+        user_profile: UserProfile | None = ExternalAuthID.objects.get(
+            external_auth_method_name=backend.name, external_auth_id=sac_id, realm=realm,
+        ).user
+        assert user_profile is not None
+        return user_profile
+    except ExternalAuthID.DoesNotExist:
+        return None
+
+def sac_login_store_sac_id_for_user(realm, backend, sac_id, user_profile):
+    backend.logger.info("Storing SAC ID %s in user account: %s", sac_id, user_profile.delivery_email)
+    ExternalAuthID.objects.create(
+        external_auth_method_name=backend.name, external_auth_id=sac_id, realm=realm, user=user_profile,
+    )
+
+def sac_login_promote_guest_to_member(realm, backend, sac_id, user_profile):
+    from zerver.models import UserProfile
+    from zerver.actions.users import do_change_user_role
+    from zerver.actions.streams import bulk_add_subscriptions
+    from zerver.lib.default_streams import get_slim_realm_default_streams
+
+    backend.logger.info("User %s is now SAC Uto member - promoting from guest to full member", sac_id)
+    do_change_user_role(user_profile, UserProfile.ROLE_MEMBER, acting_user=None)
+
+    backend.logger.info("Subscribing promoted user %s to default public channels", sac_id)
+    default_streams = get_slim_realm_default_streams(realm)
+    bulk_add_subscriptions(realm, default_streams, [user_profile], acting_user=None)
+
+def sac_login_demote_member_to_guest(realm, backend, sac_id, user_profile):
+    from zerver.models import UserProfile
+    from zerver.actions.users import do_change_user_role
+    from zerver.models.streams import get_all_streams
+    from zerver.actions.streams import bulk_remove_subscriptions
+
+    backend.logger.info("User %s is no longer SAC Uto member - demoting from full member to guest", sac_id)
+    do_change_user_role(user_profile, UserProfile.ROLE_GUEST, acting_user=None)
+
+    backend.logger.info("Removing demited user %s from all public channels", sac_id)
+    public_channels = get_all_streams(realm).filter(invite_only=False).all()
+    bulk_remove_subscriptions(realm, [user_profile], public_channels, acting_user=None)
+
+def sac_login_add_user_to_channel(realm, backend, sac_id, user_profile, invited_to_channel):
+    from zerver.actions.streams import bulk_add_subscriptions
+
+    backend.logger.info("Adding user %s to channel in the invite: %s", sac_id, invited_to_channel.name)
+    bulk_add_subscriptions(realm, [invited_to_channel], [user_profile], acting_user=None)
+
+def sac_login_adjust_groups_and_channels_for_user(realm, backend, sac_id, user_profile, sac_uto_roles):
+    from zerver.models import NamedUserGroup, UserGroupMembership
+    from zerver.models.streams import bulk_get_streams
+    from zerver.lib.user_groups import get_direct_memberships_of_users
+    from zerver.actions.streams import bulk_add_subscriptions, bulk_remove_subscriptions
+    from zerver.actions.user_groups import bulk_add_members_to_user_groups, bulk_remove_members_from_user_groups
+    from zerver.actions.custom_profile_fields import do_update_user_custom_profile_data_if_changed
+
+    add_to_groups = []
+    add_to_channels = []
+    remove_from_groups = []
+    remove_from_channels = []
+    effective_function = ""
+
+    definitions = [
+        # Structure: ["role technical name", "group name", "channel name", "function profile field content"]
+        # If multiple lines contain the same values, the last one takes precedence
+        ["Group::SektionsTourenUndKurse::Tourenleiter", "Tourenleiter-innen", "tourenleiter-innen", "Tourenleiter*in"],
+    ]
+
+    for role, group_name, channel_name, function in definitions:
+        has_role = any(role == r["role_class"] for r in sac_uto_roles)
+        if has_role:
+            backend.logger.info("User %s has role: %s", sac_id, role)
+            add_to_groups.append(group_name)
+            add_to_channels.append(channel_name)
+            effective_function = function
+        else:
+            backend.logger.info("User %s does not have role: %s", sac_id, role)
+            remove_from_groups.append(group_name)
+            remove_from_channels.append(channel_name)
+
+    if add_to_groups:
+        backend.logger.info("Making sure user %s is member of groups: %s", sac_id, add_to_groups)
+        groups = list(NamedUserGroup.objects.filter(realm_for_sharding=realm, name__in=add_to_groups))
+        already_existing_group_ids = [
+            m.user_group.id for m in set(UserGroupMembership.objects.filter(user_group__in=groups, user_profile=user_profile))
+        ]
+        groups_to_add_to = [g for g in groups if g.id not in already_existing_group_ids]
+        bulk_add_members_to_user_groups(groups_to_add_to, [user_profile.id], acting_user=None)
+
+    if remove_from_groups:
+        backend.logger.info("Making sure user %s is not member of groups: %s", sac_id, remove_from_groups)
+        groups = list(NamedUserGroup.objects.filter(realm_for_sharding=realm, name__in=remove_from_groups))
+        bulk_remove_members_from_user_groups(groups, [user_profile.id], acting_user=None)
+
+    if add_to_channels:
+        backend.logger.info("Making sure user %s is subscribed to channels: %s", sac_id, add_to_channels)
+        channels = bulk_get_streams(realm, add_to_channels).values()
+        bulk_add_subscriptions(realm, channels, [user_profile], acting_user=None)
+
+    if remove_from_channels:
+        backend.logger.info("Making sure user %s is not subscribed to channels: %s", sac_id, remove_from_channels)
+        channels = bulk_get_streams(realm, remove_from_channels).values()
+        bulk_remove_subscriptions(realm, [user_profile], channels, acting_user=None)
+
+    function_custom_profile_field = CustomProfileField.objects.get(realm=realm.id, name="Funktion")
+    if function_custom_profile_field:
+        backend.logger.info("Setting function custom profile field for user %s to: %s", sac_id, effective_function)
+        do_update_user_custom_profile_data_if_changed(user_profile, [{
+            "id": function_custom_profile_field.id,
+            "value": effective_function,
+        }])
+    else:
+        backend.logger.warn("Custom profile field for function does not exist")
 
 def validate_otp_params(
     mobile_flow_otp: str | None = None, desktop_flow_otp: str | None = None
