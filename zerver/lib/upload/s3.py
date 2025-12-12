@@ -67,6 +67,9 @@ def get_bucket(bucket_name: str, authed: bool = True) -> "Bucket":
             signature_version=None if authed else botocore.UNSIGNED,
             s3={"addressing_style": settings.S3_ADDRESSING_STYLE},
             request_checksum_calculation=checksum,
+            # SAC Uto patch: with S3_SKIP_CHECKSUM, also skip response checksum
+            # validation (chunked upload workaround)
+            response_checksum_validation=checksum,
         ),
     ).Bucket(bucket_name)
 

@@ -132,6 +132,10 @@ def handle_upload_pre_create_hook(
 
     # Determine the path_id to store it at
     file_name = sanitize_name(data.meta_data.get("filename", ""), strict=True)
+    # SAC Uto patch: tusd stores uploads locally (chunked upload workaround), so
+    # uploaded files must not be named like tusd's "<upload ID>.info" metadata files
+    if file_name.lower().endswith(".info"):
+        file_name += "-file"
     path_id = generate_message_upload_path(str(user_profile.realm_id), file_name)
     return tusd_json_response({"ChangeFileInfo": {"ID": path_id}})
 
@@ -166,8 +170,13 @@ def handle_upload_pre_finish_hook(
     # object (e.g. MinIO) hold a read lock for the life of an open
     # GetObject, so the copy would block until that idle reader is torn
     # down -- tens of seconds later.
+    # SAC Uto patch: detect charset from the local tmp upload file, since it is
+    # not in S3 yet (chunked upload workaround)
+    from pathlib import Path
+    filepath = Path(f"/tmp/sac-uto-tmp-uploads/{path_id}")
     if needs_charset_detection(content_type):
-        content_type = maybe_add_charset(content_type, attachment_source(path_id))
+        content_type = maybe_add_charset(content_type, filepath.read_bytes())
+        # content_type = maybe_add_charset(content_type, attachment_source(path_id))
 
     if settings.LOCAL_UPLOADS_DIR is None:
         # We "copy" the file to itself to update the Content-Type,
@@ -186,15 +195,31 @@ def handle_upload_pre_finish_hook(
 
         upload_backend = get_upload_backend()
         assert isinstance(upload_backend, S3UploadBackend)
-        key = upload_backend.uploads_bucket.Object(path_id)
-        key.copy_from(
-            ContentType=content_type,
-            ContentDisposition=content_disposition,
-            CopySource={"Bucket": settings.S3_AUTH_UPLOADS_BUCKET, "Key": path_id},
-            Metadata=s3_metadata,
-            MetadataDirective="REPLACE",
-            StorageClass=settings.S3_UPLOADS_STORAGE_CLASS,
+
+        # SAC Uto patch: upload the file from the local tmp dir to S3 instead of
+        # copying the S3 object to itself (chunked upload workaround)
+        from zerver.lib.upload.s3 import upload_content_to_s3
+        upload_content_to_s3(
+            bucket=upload_backend.uploads_bucket,
+            path=path_id,
+            content_type=content_type,
+            user_profile=user_profile,
+            contents=filepath.read_bytes(),
+            storage_class=settings.S3_UPLOADS_STORAGE_CLASS,
+            extra_metadata=s3_metadata,
+            filename=filename,
         )
+        filepath.unlink(missing_ok=True)
+
+        # key = upload_backend.uploads_bucket.Object(path_id)
+        # key.copy_from(
+        #     ContentType=content_type,
+        #     ContentDisposition=content_disposition,
+        #     CopySource={"Bucket": settings.S3_AUTH_UPLOADS_BUCKET, "Key": path_id},
+        #     Metadata=s3_metadata,
+        #     MetadataDirective="REPLACE",
+        #     StorageClass=settings.S3_UPLOADS_STORAGE_CLASS,
+        # )
 
         # https://tus.github.io/tusd/storage-backends/overview/#storage-format
         # tusd also creates a .info file next to the upload, which
@@ -202,13 +227,16 @@ def handle_upload_pre_finish_hook(
         # state) to work.  These files are inaccessible via Zulip, and
         # small enough to not pose any notable storage use; but we
         # should store them with the right StorageClass.
-        if settings.S3_UPLOADS_STORAGE_CLASS != "STANDARD":
-            info_key = upload_backend.uploads_bucket.Object(path_id + ".info")
-            info_key.copy_from(
-                CopySource={"Bucket": settings.S3_AUTH_UPLOADS_BUCKET, "Key": path_id + ".info"},
-                MetadataDirective="COPY",
-                StorageClass=settings.S3_UPLOADS_STORAGE_CLASS,
-            )
+
+        # SAC Uto patch: skip, since the .info file stays in the local tmp dir
+        # (chunked upload workaround)
+        # if settings.S3_UPLOADS_STORAGE_CLASS != "STANDARD":
+        #     info_key = upload_backend.uploads_bucket.Object(path_id + ".info")
+        #     info_key.copy_from(
+        #         CopySource={"Bucket": settings.S3_AUTH_UPLOADS_BUCKET, "Key": path_id + ".info"},
+        #         MetadataDirective="COPY",
+        #         StorageClass=settings.S3_UPLOADS_STORAGE_CLASS,
+        #     )
 
     # Open a fresh source for create_attachment/maybe_thumbnail to
     # read from, now that the self-copy above (if any) has finished.
