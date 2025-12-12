@@ -155,8 +155,6 @@ def handle_upload_pre_finish_hook(
         content_type = guess_type(filename)[0]
         if content_type is None:
             content_type = "application/octet-stream"
-    file_data = attachment_source(path_id)
-    content_type = maybe_add_charset(content_type, file_data)
 
     if settings.LOCAL_UPLOADS_DIR is None:
         # We "copy" the file to itself to update the Content-Type,
@@ -174,15 +172,32 @@ def handle_upload_pre_finish_hook(
         from zerver.lib.upload.s3 import S3UploadBackend
 
         assert isinstance(upload_backend, S3UploadBackend)
-        key = upload_backend.uploads_bucket.Object(path_id)
-        key.copy_from(
-            ContentType=content_type,
-            ContentDisposition=content_disposition,
-            CopySource={"Bucket": settings.S3_AUTH_UPLOADS_BUCKET, "Key": path_id},
-            Metadata=s3_metadata,
-            MetadataDirective="REPLACE",
-            StorageClass=settings.S3_UPLOADS_STORAGE_CLASS,
+
+        # SAC Uto patch: chunked upload workaround
+        from zerver.lib.upload.s3 import upload_content_to_s3
+        from pathlib import Path
+        filepath = Path(f"/tmp/sac-uto-tmp-uploads/{path_id}")
+        upload_content_to_s3(
+            bucket=upload_backend.uploads_bucket,
+            path=path_id,
+            content_type=content_type,
+            user_profile=user_profile,
+            contents=filepath.read_bytes(),
+            storage_class=settings.S3_UPLOADS_STORAGE_CLASS,
+            extra_metadata=s3_metadata,
+            filename=filename,
         )
+        filepath.unlink(missing_ok=True)
+
+        # key = upload_backend.uploads_bucket.Object(path_id)
+        # key.copy_from(
+        #     ContentType=content_type,
+        #     ContentDisposition=content_disposition,
+        #     CopySource={"Bucket": settings.S3_AUTH_UPLOADS_BUCKET, "Key": path_id},
+        #     Metadata=s3_metadata,
+        #     MetadataDirective="REPLACE",
+        #     StorageClass=settings.S3_UPLOADS_STORAGE_CLASS,
+        # )
 
         # https://tus.github.io/tusd/storage-backends/overview/#storage-format
         # tusd also creates a .info file next to the upload, which
@@ -190,13 +205,17 @@ def handle_upload_pre_finish_hook(
         # state) to work.  These files are inaccessible via Zulip, and
         # small enough to not pose any notable storage use; but we
         # should store them with the right StorageClass.
-        if settings.S3_UPLOADS_STORAGE_CLASS != "STANDARD":
-            info_key = upload_backend.uploads_bucket.Object(path_id + ".info")
-            info_key.copy_from(
-                CopySource={"Bucket": settings.S3_AUTH_UPLOADS_BUCKET, "Key": path_id + ".info"},
-                MetadataDirective="COPY",
-                StorageClass=settings.S3_UPLOADS_STORAGE_CLASS,
-            )
+
+        # if settings.S3_UPLOADS_STORAGE_CLASS != "STANDARD":
+        #     info_key = upload_backend.uploads_bucket.Object(path_id + ".info")
+        #     info_key.copy_from(
+        #         CopySource={"Bucket": settings.S3_AUTH_UPLOADS_BUCKET, "Key": path_id + ".info"},
+        #         MetadataDirective="COPY",
+        #         StorageClass=settings.S3_UPLOADS_STORAGE_CLASS,
+        #     )
+
+    file_data = attachment_source(path_id)
+    content_type = maybe_add_charset(content_type, file_data)
 
     with transaction.atomic(durable=True):
         create_attachment(

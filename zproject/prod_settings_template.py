@@ -843,7 +843,8 @@ S3_AVATAR_PUBLIC_URL_PREFIX = "__zulip_s3_avatar_public_url_prefix__"
 ## Maximum allowed size of uploaded files, in megabytes. Set
 ## MAX_FILE_UPLOAD_SIZE to 0 to disable file uploads completely
 ## (including hiding upload-related options from UI).
-# MAX_FILE_UPLOAD_SIZE = 100
+# TODO: DISABLE ONCE CHUNKED UPLOADS ARE WORKING!!!
+MAX_FILE_UPLOAD_SIZE = 50
 
 ## Controls whether name changes are completely disabled for this
 ## installation.  This is useful when you're syncing names from an

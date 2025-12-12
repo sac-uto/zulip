@@ -68,7 +68,9 @@ def get_bucket(bucket_name: str, authed: bool = True) -> "Bucket":
         config=Config(
             signature_version=None if authed else botocore.UNSIGNED,
             s3={"addressing_style": settings.S3_ADDRESSING_STYLE},
-            request_checksum_calculation=checksum,
+            # request_checksum_calculation=checksum,
+            request_checksum_calculation="when_required",
+            response_checksum_validation="when_required",
         ),
     ).Bucket(bucket_name)
 
