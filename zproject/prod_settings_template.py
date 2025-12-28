@@ -854,11 +854,11 @@ NAME_CHANGES_DISABLED = True
 ## Controls whether avatar changes are completely disabled for this
 ## installation.  This is useful when you're syncing avatars from an
 ## integrated LDAP/Active Directory.
-# AVATAR_CHANGES_DISABLED = False
+AVATAR_CHANGES_DISABLED = True
 
 ## Controls whether users who have not uploaded an avatar will receive an avatar
 ## from gravatar.com.
-# ENABLE_GRAVATAR = True
+ENABLE_GRAVATAR = False
 
 ## To override the default avatar image if ENABLE_GRAVATAR is False, place your
 ## custom default avatar image at /home/zulip/local-static/default-avatar.png

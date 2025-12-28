@@ -3672,6 +3672,9 @@ def sac_login_sync_user_details(
 
     assert user_profile is not None
 
+    # Update SAC user avatar
+    sac_login_update_avatar_for_user(realm, backend, sac_id, user_profile, response)
+
     # If we have an invite, add the user to the private channel
     if invited_to_channel:
         sac_login_add_user_to_channel(realm, backend, sac_id, user_profile, invited_to_channel)
@@ -3755,8 +3758,6 @@ def sac_login_update_user(realm, backend, response, sac_id, user_profile, is_sac
             user_profile, "email_address_visibility", UserBaseSettings.EMAIL_ADDRESS_VISIBILITY_ADMINS, acting_user=None,
         )
 
-    # TODO: update avatar if needed
-
 def sac_login_redirect_non_uto_member_to_login(realm: Realm) -> HttpResponseRedirect:
     redirect_url = realm.url + reverse(
         "login_page", kwargs={"template_name": "zerver/login.html"}, query={"not_uto_member": "1"}
@@ -3778,6 +3779,47 @@ def sac_login_store_sac_id_for_user(realm, backend, sac_id, user_profile):
     ExternalAuthID.objects.create(
         external_auth_method_name=backend.name, external_auth_id=sac_id, realm=realm, user=user_profile,
     )
+
+def sac_login_update_avatar_for_user(realm, backend, sac_id, user_profile, response):
+    from io import BytesIO
+    from hashlib import sha256
+    from urllib.request import urlopen
+    from zerver.models import UserProfile
+    from zerver.actions.user_settings import do_change_avatar_fields
+    from zerver.lib.avatar_hash import user_avatar_content_hash
+    from zerver.lib.upload import upload_avatar_image
+
+    # Check if an avatar is set in the SAC profile which is not an SVG file
+    # We can't use SVG files, and those are likely to be the default avatar anyway
+    sac_url = response["picture_url"]
+    if not sac_url or not sac_url.startswith("https://") or sac_url.endswith(".svg"):
+        backend.logger.info("No suitable avatar in SAC profile of user: %s", sac_id)
+        return
+
+    # Check the stored image URL hash so we only continue if it has changed
+    sac_url_hash = sha256(sac_url.encode("utf-8")).hexdigest()
+    if sac_url_hash == user_profile.avatar_hash:
+        backend.logger.info("Avatar is up to date for user: %s", sac_id)
+        return
+
+    backend.logger.info("Setting avatar from SAC profile for user: %s", sac_id)
+    try:
+        # Download SAC profile avatar from URL
+        response = urlopen(sac_url)
+        image_data = response.read()
+        # Guess content type of image
+        content_type = magic.from_buffer(image_data[:1024], mime=True)
+        if not content_type.startswith("image/"):
+            backend.logger.info("Avatar in SAC profile of user %s has invalid MIME type: %s", sac_id, content_type)
+            return
+        # Upload avatar to Zulip's storage
+        upload_avatar_image(BytesIO(image_data), user_profile, content_type=content_type)
+        do_change_avatar_fields(user_profile, UserProfile.AVATAR_FROM_USER, acting_user=None)
+        # Save URL hash so we don't do this every time
+        user_profile.avatar_hash = sac_url_hash
+        user_profile.save(update_fields=["avatar_hash"])
+    except Exception as e:
+        backend.logger.warn("Failed to set SAC avatar for user %s: %s", sac_id, e)
 
 def sac_login_promote_guest_to_member(realm, backend, sac_id, user_profile):
     from zerver.models import UserProfile
@@ -3868,14 +3910,11 @@ def sac_login_adjust_groups_and_channels_for_user(realm, backend, sac_id, user_p
         bulk_remove_subscriptions(realm, [user_profile], channels, acting_user=None)
 
     function_custom_profile_field = CustomProfileField.objects.get(realm=realm.id, name="Funktion")
-    if function_custom_profile_field:
-        backend.logger.info("Setting function custom profile field for user %s to: %s", sac_id, effective_function)
-        do_update_user_custom_profile_data_if_changed(user_profile, [{
-            "id": function_custom_profile_field.id,
-            "value": effective_function,
-        }])
-    else:
-        backend.logger.warn("Custom profile field for function does not exist")
+    backend.logger.info("Setting function custom profile field for user %s to: %s", sac_id, effective_function)
+    do_update_user_custom_profile_data_if_changed(user_profile, [{
+        "id": function_custom_profile_field.id,
+        "value": effective_function,
+    }])
 
 def validate_otp_params(
     mobile_flow_otp: str | None = None, desktop_flow_otp: str | None = None
