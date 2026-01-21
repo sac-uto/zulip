@@ -3575,14 +3575,14 @@ class SacLoginBackend(GenericOpenIdConnectBackend):
         assert isinstance(secret, str)
         return client_id, secret
 
-    def is_group_id_allowed(self, group_id: str) -> bool:
-        return group_id in self.ALLOWED_GROUP_IDS
+    def is_role_allowed(self, role) -> bool:
+        group_id = str(role["layer_group_id"])
+        return group_id in self.ALLOWED_GROUP_IDS and role["role_class"] != "Group::SektionsNeuanmeldungenNv::Neuanmeldung"
 
     def should_auto_signup(self) -> bool:
         return True
 
 # SAC Uto patch: pre-process SAC OIDC response
-@partial
 def sac_login_process_response(
     backend: BaseAuth, details: dict[str, Any], response: HttpResponse, *args: Any, **kwargs: Any
 ) -> HttpResponse | dict[str, Any]:
@@ -3605,7 +3605,6 @@ def sac_login_process_response(
         details["email"] = f"changed.{details['email']}"
 
 # SAC Uto patch: synchronize user details from SAC OIDC response
-@partial
 def sac_login_sync_user_details(
     backend: BaseAuth, details: dict[str, Any], response: HttpResponse, *args: Any, **kwargs: Any
 ) -> HttpResponse | dict[str, Any]:
@@ -3627,7 +3626,7 @@ def sac_login_sync_user_details(
 
     # Check if the user is an SAC Uto member
     roles = response.get("roles", [])
-    sac_uto_roles = [role for role in roles if backend.is_group_id_allowed(str(role["layer_group_id"]))]
+    sac_uto_roles = [role for role in roles if backend.is_role_allowed(role)]
     is_sac_uto_member = len(sac_uto_roles) > 0
     if return_data["full_name"] and "PRETEND_NON_UTO" in return_data["full_name"]: # for testing purposes
         is_sac_uto_member = False
@@ -3680,7 +3679,10 @@ def sac_login_sync_user_details(
         sac_login_add_user_to_channel(realm, backend, sac_id, user_profile, invited_to_channel)
 
     # Add or remove user from specific channels and groups depending on their roles
-    sac_login_adjust_groups_and_channels_for_user(realm, backend, sac_id, user_profile, sac_uto_roles)
+    if user_profile.is_realm_admin:
+        backend.logger.info("Skipping group and channel adjustments because user is an admin: %s", sac_id)
+    else:
+        sac_login_adjust_groups_and_channels_for_user(realm, backend, sac_id, user_profile, sac_uto_roles)
 
     return {
         "user_profile": user_profile
@@ -3843,7 +3845,7 @@ def sac_login_demote_member_to_guest(realm, backend, sac_id, user_profile):
     backend.logger.info("User %s is no longer SAC Uto member - demoting from full member to guest", sac_id)
     do_change_user_role(user_profile, UserProfile.ROLE_GUEST, acting_user=None)
 
-    backend.logger.info("Removing demited user %s from all public channels", sac_id)
+    backend.logger.info("Removing demoted user %s from all public channels", sac_id)
     public_channels = get_all_streams(realm).filter(invite_only=False).all()
     bulk_remove_subscriptions(realm, [user_profile], public_channels, acting_user=None)
 
