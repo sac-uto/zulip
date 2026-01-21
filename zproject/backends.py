@@ -4336,14 +4336,11 @@ class GenericOpenIdConnectBackend(SocialAuthMixin, OpenIdConnectAuth):
 
 # SAC Uto patch: SAC OIDC backend
 @external_auth_method
-class SacLoginBackend(GenericOpenIdConnectBackend):
+class SacLoginBackend(SocialAuthMixin, OpenIdConnectAuth):
     name = "sac"
     auth_backend_name = "SAC"
 
     settings_dict = getattr(settings, "SAC_LOGIN_CONFIG", {})
-
-    display_name = "SAC"
-    display_icon = staticfiles_storage.url("images/authentication_backends/sac-icon.png")
 
     full_name_validated = True
 
@@ -4351,6 +4348,11 @@ class SacLoginBackend(GenericOpenIdConnectBackend):
     ALLOWED_GROUP_IDS = settings_dict.get("allowed_group_ids", [])
     DEFAULT_SCOPE = ["openid", "email", "name", "with_roles", "user_groups"]
     GET_ALL_EXTRA_DATA = True
+
+    @classmethod
+    @override
+    def display_icon(cls) -> str | None:
+        return staticfiles_storage.url("images/authentication_backends/sac-icon.png")
 
     @override
     def get_key_and_secret(self) -> tuple[str, str]:
@@ -4360,14 +4362,14 @@ class SacLoginBackend(GenericOpenIdConnectBackend):
         assert isinstance(secret, str)
         return client_id, secret
 
-    def is_group_id_allowed(self, group_id: str) -> bool:
-        return group_id in self.ALLOWED_GROUP_IDS
+    def is_role_allowed(self, role) -> bool:
+        group_id = str(role["layer_group_id"])
+        return group_id in self.ALLOWED_GROUP_IDS and role["role_class"] != "Group::SektionsNeuanmeldungenNv::Neuanmeldung"
 
     def should_auto_signup(self) -> bool:
         return True
 
 # SAC Uto patch: pre-process SAC OIDC response
-@partial
 def sac_login_process_response(
     backend: BaseAuth, details: dict[str, Any], response: HttpResponse, *args: Any, **kwargs: Any
 ) -> HttpResponse | dict[str, Any]:
@@ -4390,7 +4392,6 @@ def sac_login_process_response(
         details["email"] = f"changed.{details['email']}"
 
 # SAC Uto patch: synchronize user details from SAC OIDC response
-@partial
 def sac_login_sync_user_details(
     backend: BaseAuth, details: dict[str, Any], response: HttpResponse, *args: Any, **kwargs: Any
 ) -> HttpResponse | dict[str, Any]:
@@ -4412,7 +4413,7 @@ def sac_login_sync_user_details(
 
     # Check if the user is an SAC Uto member
     roles = response.get("roles", [])
-    sac_uto_roles = [role for role in roles if backend.is_group_id_allowed(str(role["layer_group_id"]))]
+    sac_uto_roles = [role for role in roles if backend.is_role_allowed(role)]
     is_sac_uto_member = len(sac_uto_roles) > 0
     if return_data["full_name"] and "PRETEND_NON_UTO" in return_data["full_name"]: # for testing purposes
         is_sac_uto_member = False
@@ -4465,7 +4466,10 @@ def sac_login_sync_user_details(
         sac_login_add_user_to_channel(realm, backend, sac_id, user_profile, invited_to_channel)
 
     # Add or remove user from specific channels and groups depending on their roles
-    sac_login_adjust_groups_and_channels_for_user(realm, backend, sac_id, user_profile, sac_uto_roles)
+    if user_profile.is_realm_admin:
+        backend.logger.info("Skipping group and channel adjustments because user is an admin: %s", sac_id)
+    else:
+        sac_login_adjust_groups_and_channels_for_user(realm, backend, sac_id, user_profile, sac_uto_roles)
 
     return {
         "user_profile": user_profile
@@ -4528,7 +4532,7 @@ def sac_login_update_user(realm, backend, response, sac_id, user_profile, is_sac
     full_name = return_data["full_name"]
     if full_name and user_profile.full_name != full_name:
         backend.logger.info("Updating name of user %s: %s => %s", sac_id, user_profile.full_name, full_name)
-        do_change_full_name(user_profile, full_name, acting_user=None)
+        do_change_full_name(user_profile, full_name, acting_user=None, notify=True)
 
     # Promote or demote user if their SAC Uto membership has changed
     if user_profile.role == UserProfile.ROLE_GUEST and is_sac_uto_member:
@@ -4613,7 +4617,7 @@ def sac_login_promote_guest_to_member(realm, backend, sac_id, user_profile):
     from zerver.lib.default_streams import get_slim_realm_default_streams
 
     backend.logger.info("User %s is now SAC Uto member - promoting from guest to full member", sac_id)
-    do_change_user_role(user_profile, UserProfile.ROLE_MEMBER, acting_user=None)
+    do_change_user_role(user_profile, UserProfile.ROLE_MEMBER, acting_user=None, notify=True)
 
     backend.logger.info("Subscribing promoted user %s to default public channels", sac_id)
     default_streams = get_slim_realm_default_streams(realm)
@@ -4626,9 +4630,9 @@ def sac_login_demote_member_to_guest(realm, backend, sac_id, user_profile):
     from zerver.actions.streams import bulk_remove_subscriptions
 
     backend.logger.info("User %s is no longer SAC Uto member - demoting from full member to guest", sac_id)
-    do_change_user_role(user_profile, UserProfile.ROLE_GUEST, acting_user=None)
+    do_change_user_role(user_profile, UserProfile.ROLE_GUEST, acting_user=None, notify=True)
 
-    backend.logger.info("Removing demited user %s from all public channels", sac_id)
+    backend.logger.info("Removing demoted user %s from all public channels", sac_id)
     public_channels = get_all_streams(realm).filter(invite_only=False).all()
     bulk_remove_subscriptions(realm, [user_profile], public_channels, acting_user=None)
 
@@ -4696,10 +4700,11 @@ def sac_login_adjust_groups_and_channels_for_user(realm, backend, sac_id, user_p
 
     function_custom_profile_field = CustomProfileField.objects.get(realm=realm.id, name="Funktion")
     backend.logger.info("Setting function custom profile field for user %s to: %s", sac_id, effective_function)
-    do_update_user_custom_profile_data_if_changed(user_profile, [{
+    profile_data = [{
         "id": function_custom_profile_field.id,
         "value": effective_function,
-    }])
+    }]
+    do_update_user_custom_profile_data_if_changed(user_profile, profile_data, acting_user=None, notify=False)
 
 def validate_otp_params(
     mobile_flow_otp: str | None = None, desktop_flow_otp: str | None = None
