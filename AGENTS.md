@@ -1,5 +1,8 @@
 # AGENTS.md - Guidelines for AI Contributions to Zulip
 
+<!-- SAC Uto patch: point agents to the fork-specific instructions -->
+**SAC Uto fork: read `SAC_UTO_AGENTS.md` first; it takes precedence over this file.**
+
 This file provides guidance to AI coding agents for contributing to
 the Zulip codebase. These guidelines are designed to produce
 contributions that meet the same high standards we expect from human
